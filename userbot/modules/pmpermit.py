@@ -5,6 +5,8 @@
 #
 """ Userbot module for keeping control who PM you. """
 
+from io import BytesIO
+
 from sqlalchemy.exc import IntegrityError
 from telethon.tl.functions.contacts import BlockRequest, UnblockRequest
 from telethon.tl.functions.messages import ReportSpamRequest
@@ -20,6 +22,7 @@ from userbot import (
     PM_AUTO_BAN,
 )
 from userbot.events import register
+from userbot.modules.sql_helper.pm_permit_sql import get_approved
 
 # ========================= CONSTANTS ============================
 DEF_UNAPPROVED_MSG = (
@@ -36,88 +39,91 @@ DEF_UNAPPROVED_MSG = (
 async def permitpm(event):
     """Prohibits people from PMing you without approval. \
         Will block retarded nibbas automatically."""
-    if PM_AUTO_BAN:
-        self_user = await event.client.get_me()
-        if (
-            event.is_private
-            and event.chat_id != 777000
-            and event.chat_id != self_user.id
-            and not (await event.get_sender()).bot
-        ):
-            try:
-                from userbot.modules.sql_helper.globals import gvarstatus
-                from userbot.modules.sql_helper.pm_permit_sql import is_approved
-            except AttributeError:
-                return
-            apprv = is_approved(event.chat_id)
-            notifsoff = gvarstatus("NOTIF_OFF")
+    if not PM_AUTO_BAN:
+        return
+    self_user = await event.client.get_me()
+    if (
+        event.is_private
+        and event.chat_id != 777000
+        and event.chat_id != self_user.id
+        and not (await event.get_sender()).bot
+    ):
+        try:
+            from userbot.modules.sql_helper.globals import gvarstatus
+            from userbot.modules.sql_helper.pm_permit_sql import is_approved
+        except AttributeError:
+            return
 
-            # Use user custom unapproved message
-            getmsg = gvarstatus("unapproved_msg")
-            if getmsg is not None:
-                UNAPPROVED_MSG = getmsg
-            else:
-                UNAPPROVED_MSG = DEF_UNAPPROVED_MSG
+        pm_limit = gvarstatus("PM_LIMIT") or 5
+        apprv = is_approved(event.chat_id)
+        notifsoff = gvarstatus("NOTIF_OFF")
 
-            # This part basically is a sanity check
-            # If the message that sent before is Unapproved Message
-            # then stop sending it again to prevent FloodHit
-            if not apprv and event.text != UNAPPROVED_MSG:
-                if event.chat_id in LASTMSG:
-                    prevmsg = LASTMSG[event.chat_id]
-                    # If the message doesn't same as previous one
-                    # Send the Unapproved Message again
-                    if event.text != prevmsg:
-                        async for message in event.client.iter_messages(
-                            event.chat_id, from_user="me", search=UNAPPROVED_MSG
-                        ):
-                            await message.delete()
-                        await event.reply(f"`{UNAPPROVED_MSG}`")
-                    LASTMSG.update({event.chat_id: event.text})
-                else:
+        # Use user custom unapproved message
+        getmsg = gvarstatus("unapproved_msg")
+        if getmsg is not None:
+            UNAPPROVED_MSG = getmsg
+        else:
+            UNAPPROVED_MSG = DEF_UNAPPROVED_MSG
+
+        # This part basically is a sanity check
+        # If the message that sent before is Unapproved Message
+        # then stop sending it again to prevent FloodHit
+        if not apprv and event.text != UNAPPROVED_MSG:
+            if event.chat_id in LASTMSG:
+                prevmsg = LASTMSG[event.chat_id]
+                # If the message doesn't same as previous one
+                # Send the Unapproved Message again
+                if event.text != prevmsg:
+                    async for message in event.client.iter_messages(
+                        event.chat_id, from_user="me", search=UNAPPROVED_MSG
+                    ):
+                        await message.delete()
                     await event.reply(f"`{UNAPPROVED_MSG}`")
-                    LASTMSG.update({event.chat_id: event.text})
+                LASTMSG.update({event.chat_id: event.text})
+            else:
+                await event.reply(f"`{UNAPPROVED_MSG}`")
+                LASTMSG.update({event.chat_id: event.text})
 
-                if notifsoff:
-                    await event.client.send_read_acknowledge(event.chat_id)
-                if event.chat_id not in COUNT_PM:
-                    COUNT_PM.update({event.chat_id: 1})
-                else:
-                    COUNT_PM[event.chat_id] = COUNT_PM[event.chat_id] + 1
+            if notifsoff:
+                await event.client.send_read_acknowledge(event.chat_id)
+            if event.chat_id not in COUNT_PM:
+                COUNT_PM.update({event.chat_id: 1})
+            else:
+                COUNT_PM[event.chat_id] = COUNT_PM[event.chat_id] + 1
 
-                if COUNT_PM[event.chat_id] > 4:
-                    await event.respond(
-                        "`You were spamming my PM.`\n"
-                        "`You have been blocked and reported as spam.`\n"
-                        "`Bye.`"
-                    )
+            if COUNT_PM[event.chat_id] == int(pm_limit):
+                await event.respond(
+                    "`You were spamming my PM.`\n"
+                    "`You have been blocked and reported as spam.`\n"
+                    "`Bye.`"
+                )
 
-                    try:
-                        del COUNT_PM[event.chat_id]
-                        del LASTMSG[event.chat_id]
-                    except KeyError:
-                        if BOTLOG:
-                            await event.client.send_message(
-                                BOTLOG_CHATID,
-                                "Count PM is seemingly going retard, please restart bot!",
-                            )
-                        return LOGS.info("CountPM went retard")
-
-                    await event.client(BlockRequest(event.chat_id))
-                    await event.client(ReportSpamRequest(peer=event.chat_id))
-
+                try:
+                    del COUNT_PM[event.chat_id]
+                    del LASTMSG[event.chat_id]
+                except KeyError:
                     if BOTLOG:
-                        name = await event.client.get_entity(event.chat_id)
-                        name0 = str(name.first_name)
                         await event.client.send_message(
                             BOTLOG_CHATID,
-                            "["
-                            + name0
-                            + "](tg://user?id="
-                            + str(event.chat_id)
-                            + ")"
-                            + " was spammed your PM and got blocked",
+                            "Count PM is seemingly going retard, please restart bot!",
                         )
+                    return LOGS.info("CountPM went retard")
+
+                await event.client(BlockRequest(event.chat_id))
+                await event.client(ReportSpamRequest(peer=event.chat_id))
+
+                if BOTLOG:
+                    name = await event.client.get_entity(event.chat_id)
+                    name0 = str(name.first_name)
+                    await event.client.send_message(
+                        BOTLOG_CHATID,
+                        "["
+                        + name0
+                        + "](tg://user?id="
+                        + str(event.chat_id)
+                        + ")"
+                        + " was spammed your PM and got blocked",
+                    )
 
 
 @register(disable_edited=True, outgoing=True, disable_errors=True)
@@ -412,12 +418,65 @@ async def add_pmsg(cust_msg):
             )
 
 
+@register(outgoing=True, pattern=r"^\.getapprove$")
+async def get_approve(event):
+    await event.edit("`Fetching user ids...`")
+    user_ids = get_approved()
+    if not user_ids:
+        await event.edit("`You haven't approved any users.`")
+        return
+
+    msg = "**Approved Users List**\n\n"
+    for i in user_ids:
+        try:
+            user = await event.client.get_entity(int(i.chat_id))
+        except ValueError:
+            msg += f"• __Unknown__ | `{i.chat_id}`\n"
+        else:
+            user_msg = (
+                f"@{user.username}"
+                if user.username
+                else f"[{user.first_name}](tg://user?id={user.id})"
+            )
+            msg += f"• {user_msg} | `{user.id}`\n"
+
+    if len(msg) >= 4096:
+        with BytesIO(str.encode(msg)) as file:
+            file.name = "approved_users.txt"
+            await event.edit("`List too long, sending as file:`")
+            await event.reply(file=file)
+        return
+
+    await event.edit(msg)
+
+
+@register(outgoing=True, pattern=r"^\.pmlimit (\d+)")
+async def pm_limit_handler(event):
+    try:
+        from userbot.modules.sql_helper.globals import addgvar
+    except AttributeError:
+        return
+
+    input_str = event.pattern_match.group(1)
+    addgvar("PM_LIMIT", input_str)
+    await event.edit(f"`Set PM limit to {input_str}`")
+
+    if BOTLOG:
+        await event.client.send_message(
+            BOTLOG_CHATID, f"#PM_LIMIT\n Set to : `{input_str}`"
+        )
+
+
 CMD_HELP.update(
     {
         "pmpermit": ">`.approve`"
         "\nUsage: Approves the mentioned/replied person to PM."
         "\n\n>`.disapprove`"
         "\nUsage: Disapproves the mentioned/replied person to PM."
+        "\n\n>`.getapprove`"
+        "\nUsage: Get all approved users."
+        "\n\n>`.pmlimit <number>`"
+        "\nUsage: Set message limit for PMPermit. (Default 5)"
         "\n\n>`.block`"
         "\nUsage: Blocks the person."
         "\n\n>`.unblock`"
